@@ -61,7 +61,7 @@ AC_CHECK_LIB([gflags],[getenv],[],[AC_MSG_ERROR(
 AC_CHECK_LIB(ssl,
         SSL_ctrl,
         [],
-        [AC_MSG_ERROR(["Error: libssl required"])])
+        [AC_MSG_ERROR(["Error: libssl required"])], `pkg-config --libs --static libssl`)
 
 # check for boost libs
 AX_BOOST_BASE([1.20.0], [], [AC_MSG_ERROR(
@@ -81,7 +81,7 @@ AC_CHECK_HEADER(double-conversion/double-conversion.h, [], [AC_MSG_ERROR(
 AC_CHECK_LIB([double-conversion],[ceil],[],[AC_MSG_ERROR(
              [Please install double-conversion library])])
 
-AC_CHECK_LIB([event], [event_set], [], [AC_MSG_ERROR([Unable to find libevent])])
+AC_CHECK_LIB([event], [event_set], [], [AC_MSG_ERROR([Unable to find libevent])], `pkg-config --libs --static libevent`)
 
 AC_CHECK_LIB([jemalloc], [xallocx])
 
