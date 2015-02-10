@@ -22,6 +22,7 @@
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <unistd.h>
+#include <gflags/gflags.h>
 
 using folly::wangle::ConnectionManager;
 using folly::wangle::ManagedConnection;
