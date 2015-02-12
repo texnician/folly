@@ -20,12 +20,13 @@
 
 #include <folly/io/async/EventBase.h>
 
-#include <folly/Baton.h>
 #include <folly/ThreadName.h>
 #include <folly/io/async/NotificationQueue.h>
 
 #include <boost/static_assert.hpp>
+#include <condition_variable>
 #include <fcntl.h>
+#include <mutex>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -563,23 +564,6 @@ bool EventBase::runInEventBaseThread(const Cob& fn) {
   return true;
 }
 
-bool EventBase::runInEventBaseThreadAndWait(void (*fn)(void*), void* arg) {
-  if (inRunningEventBaseThread()) {
-    LOG(ERROR) << "EventBase " << this << ": Waiting in the event loop is not "
-               << "allowed";
-    return false;
-  }
-
-  Baton<> ready;
-  runInEventBaseThread([&] {
-      fn(arg);
-      ready.post();
-  });
-  ready.wait();
-
-  return true;
-}
-
 bool EventBase::runInEventBaseThreadAndWait(const Cob& fn) {
   if (inRunningEventBaseThread()) {
     LOG(ERROR) << "EventBase " << this << ": Waiting in the event loop is not "
@@ -587,12 +571,20 @@ bool EventBase::runInEventBaseThreadAndWait(const Cob& fn) {
     return false;
   }
 
-  Baton<> ready;
+  bool ready = false;
+  std::mutex m;
+  std::condition_variable cv;
   runInEventBaseThread([&] {
+      SCOPE_EXIT {
+        std::unique_lock<std::mutex> l(m);
+        ready = true;
+        l.unlock();
+        cv.notify_one();
+      };
       fn();
-      ready.post();
   });
-  ready.wait();
+  std::unique_lock<std::mutex> l(m);
+  cv.wait(l, [&] { return ready; });
 
   return true;
 }

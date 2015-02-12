@@ -114,7 +114,7 @@ TEST(Via, then_function) {
   auto f = makeFuture(std::string("start"))
     .then(doWorkStatic)
     .then(Worker::doWorkStatic)
-    .then(&w, &Worker::doWork)
+    .then(&Worker::doWork, &w)
     ;
 
   EXPECT_EQ(f.value(), "start;static;class-static;class");
@@ -182,4 +182,21 @@ TEST_F(ViaFixture, viaAssignment) {
   auto f = makeFuture().via(eastExecutor.get());
   // via()&
   auto f2 = f.via(eastExecutor.get());
+}
+
+TEST(Via, chain1) {
+  EXPECT_EQ(42,
+            makeFuture()
+            .then(futures::chain<void, int>([] { return 42; }))
+            .get());
+}
+
+TEST(Via, chain3) {
+  int count = 0;
+  auto f = makeFuture().then(futures::chain<void, int>(
+      [&]{ count++; return 3.14159; },
+      [&](double) { count++; return std::string("hello"); },
+      [&]{ count++; return makeFuture(42); }));
+  EXPECT_EQ(42, f.get());
+  EXPECT_EQ(3, count);
 }

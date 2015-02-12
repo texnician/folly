@@ -166,6 +166,19 @@ namespace futures {
   /// needed. If your program never uses any timeouts or other time-based
   /// Futures you will pay no Timekeeper thread overhead.
   Future<void> sleep(Duration, Timekeeper* = nullptr);
+
+  /// Create a Future chain from a sequence of callbacks. i.e.
+  ///
+  ///   f.then(a).then(b).then(c);
+  ///
+  /// where f is a Future<A> and the result of the chain is a Future<Z>
+  /// becomes
+  ///
+  ///   f.then(chain<A,Z>(a, b, c));
+  // If anyone figures how to get chain to deduce A and Z, I'll buy you a drink.
+  template <class A, class Z, class... Callbacks>
+  std::function<Future<Z>(Try<A>)>
+  chain(Callbacks... fns);
 }
 
 template <class T>
@@ -199,10 +212,6 @@ class Future {
   /** Return the reference to result. Should not be called if !isReady().
     Will rethrow the exception if an exception has been
     captured.
-
-    This function is not thread safe - the returned Future can only
-    be executed from the thread that the executor runs it in.
-    See below for a thread safe version
     */
   typename std::add_lvalue_reference<T>::type
   value();
@@ -290,14 +299,17 @@ class Future {
 
   /// Variant where func is an member function
   ///
-  ///   struct Worker {
-  ///     R doWork(Try<T>&&); }
+  ///   struct Worker { R doWork(Try<T>); }
   ///
   ///   Worker *w;
-  ///   Future<R> f2 = f1.then(w, &Worker::doWork);
-  template <typename Caller, typename R, typename... Args>
-    Future<typename isFuture<R>::Inner>
-  then(Caller *instance, R(Caller::*func)(Args...));
+  ///   Future<R> f2 = f1.then(&Worker::doWork, w);
+  ///
+  /// This is just sugar for
+  ///
+  ///   f1.then(std::bind(&Worker::doWork, w));
+  template <typename R, typename Caller, typename... Args>
+  Future<typename isFuture<R>::Inner>
+  then(R(Caller::*func)(Args...), Caller *instance);
 
   /// Convenience method for ignoring the value and creating a Future<void>.
   /// Exceptions still propagate.
@@ -329,6 +341,22 @@ class Future {
     detail::Extract<F>::ReturnsFuture::value,
     Future<T>>::type
   onError(F&& func);
+
+  /// Like onError, but for timeouts. example:
+  ///
+  ///   Future<int> f = makeFuture<int>(42)
+  ///     .delayed(long_time)
+  ///     .onTimeout(short_time,
+  ///       []() -> int{ return -1; });
+  ///
+  /// or perhaps
+  ///
+  ///   Future<int> f = makeFuture<int>(42)
+  ///     .delayed(long_time)
+  ///     .onTimeout(short_time,
+  ///       []() { return makeFuture<int>(some_exception); });
+  template <class F>
+  Future<T> onTimeout(Duration, F&& func, Timekeeper* = nullptr);
 
   /// This is not the method you're looking for.
   ///
@@ -398,14 +426,18 @@ class Future {
   /// now. The optional Timekeeper is as with futures::sleep().
   Future<T> delayed(Duration, Timekeeper* = nullptr);
 
-  /// Block until this Future is complete. Returns a new Future containing the
-  /// result.
-  Future<T> wait();
+  /// Block until this Future is complete. Returns a reference to this Future.
+  Future<T>& wait() &;
+
+  /// Overload of wait() for rvalue Futures
+  Future<T>&& wait() &&;
 
   /// Block until this Future is complete or until the given Duration passes.
-  /// Returns a new Future which either contains the result or is incomplete,
-  /// depending on whether the Duration passed.
-  Future<T> wait(Duration);
+  /// Returns a reference to this Future
+  Future<T>& wait(Duration) &;
+
+  /// Overload of wait(Duration) for rvalue Futures
+  Future<T>&& wait(Duration) &&;
 
   /// Call e->drive() repeatedly until the future is fulfilled. Examples
   /// of DrivableExecutor include EventBase and ManualExecutor. Returns a
@@ -414,7 +446,7 @@ class Future {
   Future<T>& waitVia(DrivableExecutor* e) &;
 
   /// Overload of waitVia() for rvalue Futures
-  Future<T> waitVia(DrivableExecutor* e) &&;
+  Future<T>&& waitVia(DrivableExecutor* e) &&;
 
  private:
   typedef detail::Core<T>* corePtr;
@@ -515,8 +547,10 @@ Future<void> via(Executor* executor);
   The Futures are moved in, so your copies are invalid. If you need to
   chain further from these Futures, use the variant with an output iterator.
 
-  XXX is this still true?
-  This function is thread-safe for Futures running on different threads.
+  This function is thread-safe for Futures running on different threads. But
+  if you are doing anything non-trivial after, you will probably want to
+  follow with `via(executor)` because it will complete in whichever thread the
+  last Future completes in.
 
   The return type for Future<T> input is a Future<std::vector<Try<T>>>
   */

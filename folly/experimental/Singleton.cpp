@@ -20,9 +20,9 @@
 
 namespace folly {
 
-namespace {
+namespace detail {
 
-static constexpr std::chrono::seconds kDestroyWaitTime{5};
+constexpr std::chrono::seconds SingletonHolderBase::kDestroyWaitTime;
 
 }
 
@@ -46,7 +46,19 @@ void SingletonVault::destroyInstances() {
     for (auto type_iter = creation_order_.rbegin();
          type_iter != creation_order_.rend();
          ++type_iter) {
-      destroyInstance(singletons_.find(*type_iter));
+      singletons_[*type_iter]->destroyInstance();
+    }
+
+    for (auto& singleton_type: creation_order_) {
+      auto singleton = singletons_[singleton_type];
+      if (!singleton->hasLiveInstance()) {
+        continue;
+      }
+
+      LOG(DFATAL) << "Singleton of type " << singleton->type().name() << " has "
+                  << "a living reference after destroyInstances was finished;"
+                  << "beware! It is very likely that this singleton instance "
+                  << "will be leaked.";
     }
   }
 
@@ -56,39 +68,12 @@ void SingletonVault::destroyInstances() {
   }
 }
 
-/* Destroy and clean-up one singleton. Must be invoked while holding
- * a read lock on mutex_.
- * @param typeDescriptor - the type key for the removed singleton.
- */
-void SingletonVault::destroyInstance(SingletonMap::iterator entry_it) {
-  const auto& type = entry_it->first;
-  auto& entry = *(entry_it->second);
-
-  entry.state = detail::SingletonEntryState::Dead;
-  entry.instance.reset();
-  auto wait_result = entry.destroy_baton->timed_wait(
-    std::chrono::steady_clock::now() + kDestroyWaitTime);
-  if (!wait_result) {
-    LOG(ERROR) << "Singleton of type " << type.prettyName() << " has a living "
-               << "reference at destroyInstances time; beware! Raw pointer "
-               << "is " << entry.instance_ptr << ". It is very likely that "
-               << "some other singleton is holding a shared_ptr to it. Make "
-               << "sure dependencies between these singletons are properly "
-               << "defined.";
-  }
-}
-
 void SingletonVault::reenableInstances() {
   RWSpinLock::WriteHolder state_wh(&stateMutex_);
 
   stateCheck(SingletonVaultState::Quiescing);
 
   state_ = SingletonVaultState::Running;
-}
-
-SingletonVault* SingletonVault::singleton() {
-  static SingletonVault* vault = new SingletonVault();
-  return vault;
 }
 
 void SingletonVault::scheduleDestroyInstances() {

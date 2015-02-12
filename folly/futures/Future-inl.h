@@ -201,9 +201,9 @@ Future<T>::thenImplementation(F func, detail::argResult<isTry, F, Args...>) {
 }
 
 template <typename T>
-template <typename Caller, typename R, typename... Args>
+template <typename R, typename Caller, typename... Args>
   Future<typename isFuture<R>::Inner>
-Future<T>::then(Caller *instance, R(Caller::*func)(Args...)) {
+Future<T>::then(R(Caller::*func)(Args...), Caller *instance) {
   typedef typename std::remove_cv<
     typename std::remove_reference<
       typename detail::ArgType<Args...>::FirstArg>::type>::type FirstArg;
@@ -280,6 +280,14 @@ Future<T>::onError(F&& func) {
   });
 
   return f;
+}
+
+template <class T>
+template <class F>
+Future<T> Future<T>::onTimeout(Duration dur, F&& func, Timekeeper* tk) {
+  auto funcw = folly::makeMoveWrapper(std::forward<F>(func));
+  return within(dur, tk)
+    .onError([funcw](TimedOut const&) { return (*funcw)(); });
 }
 
 template <class T>
@@ -680,27 +688,28 @@ Future<T> Future<T>::delayed(Duration dur, Timekeeper* tk) {
     });
 }
 
+namespace detail {
+
 template <class T>
-Future<T> Future<T>::wait() {
+void waitImpl(Future<T>& f) {
   Baton<> baton;
-  auto done = then([&](Try<T> t) {
+  f = f.then([&](Try<T> t) {
     baton.post();
     return makeFuture(std::move(t));
   });
   baton.wait();
-  while (!done.isReady()) {
-    // There's a race here between the return here and the actual finishing of
-    // the future. f is completed, but the setup may not have finished on done
-    // after the baton has posted.
+  // There's a race here between the return here and the actual finishing of
+  // the future. f is completed, but the setup may not have finished on done
+  // after the baton has posted.
+  while (!f.isReady()) {
     std::this_thread::yield();
   }
-  return done;
 }
 
 template <class T>
-Future<T> Future<T>::wait(Duration dur) {
+void waitImpl(Future<T>& f, Duration dur) {
   auto baton = std::make_shared<Baton<>>();
-  auto done = then([baton](Try<T> t) {
+  f = f.then([baton](Try<T> t) {
     baton->post();
     return makeFuture(std::move(t));
   });
@@ -708,30 +717,88 @@ Future<T> Future<T>::wait(Duration dur) {
   // true), then the returned Future is complete when it is returned to the
   // caller. We need to wait out the race for that Future to complete.
   if (baton->timed_wait(std::chrono::system_clock::now() + dur)) {
-    while (!done.isReady()) {
+    while (!f.isReady()) {
       std::this_thread::yield();
     }
   }
-  return done;
 }
 
 template <class T>
-Future<T>& Future<T>::waitVia(DrivableExecutor* e) & {
-  while (!isReady()) {
+void waitViaImpl(Future<T>& f, DrivableExecutor* e) {
+  while (!f.isReady()) {
     e->drive();
   }
+}
+
+} // detail
+
+template <class T>
+Future<T>& Future<T>::wait() & {
+  detail::waitImpl(*this);
   return *this;
 }
 
 template <class T>
-Future<T> Future<T>::waitVia(DrivableExecutor* e) && {
-  while (!isReady()) {
-    e->drive();
-  }
+Future<T>&& Future<T>::wait() && {
+  detail::waitImpl(*this);
   return std::move(*this);
 }
 
+template <class T>
+Future<T>& Future<T>::wait(Duration dur) & {
+  detail::waitImpl(*this, dur);
+  return *this;
 }
+
+template <class T>
+Future<T>&& Future<T>::wait(Duration dur) && {
+  detail::waitImpl(*this, dur);
+  return std::move(*this);
+}
+
+template <class T>
+Future<T>& Future<T>::waitVia(DrivableExecutor* e) & {
+  detail::waitViaImpl(*this, e);
+  return *this;
+}
+
+template <class T>
+Future<T>&& Future<T>::waitVia(DrivableExecutor* e) && {
+  detail::waitViaImpl(*this, e);
+  return std::move(*this);
+}
+
+namespace futures {
+
+  namespace {
+    template <class Z, class F, class... Callbacks>
+    Future<Z> chainHelper(F, Callbacks...);
+
+    template <class Z>
+    Future<Z> chainHelper(Future<Z> f) {
+      return f;
+    }
+
+    template <class Z, class F, class Fn, class... Callbacks>
+    Future<Z> chainHelper(F f, Fn fn, Callbacks... fns) {
+      return chainHelper<Z>(f.then(fn), fns...);
+    }
+  }
+
+  template <class A, class Z, class... Callbacks>
+  std::function<Future<Z>(Try<A>)>
+  chain(Callbacks... fns) {
+    MoveWrapper<Promise<A>> pw;
+    MoveWrapper<Future<Z>> fw(chainHelper<Z>(pw->getFuture(), fns...));
+    return [=](Try<A> t) mutable {
+      pw->fulfilTry(std::move(t));
+      return std::move(*fw);
+    };
+  }
+
+}
+
+} // namespace folly
 
 // I haven't included a Future<T&> specialization because I don't forsee us
 // using it, however it is not difficult to add when needed. Refer to
